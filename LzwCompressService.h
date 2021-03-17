@@ -5,6 +5,7 @@
 #ifndef LZWV2_LZWCOMPRESSSERVICE_H
 #define LZWV2_LZWCOMPRESSSERVICE_H
 
+#include <bitset>
 #include <vector>
 #include <unordered_map>
 #include <istream>
@@ -23,66 +24,67 @@ class LzwCompressService {
 
     void initializeDictionary() {
         rootNode->code = 0;
-        for (int i = 0x00; i < 0xFF; i++) {
+        for (int i = 0x00; i <= 0xFF; i++) {
             rootNode->children[i].code = i;
             rootNode->children[i].children.clear();
         }
     }
 
     uint8_t getBitsToRepresentInteger(uint32_t x) {
-//        std::cout << "getBitsToRepresentInteger(" << x << ") = " << (std::numeric_limits<uint32_t>::digits - std::countl_zero(x)) << std::endl;
         return std::numeric_limits<uint32_t>::digits - std::countl_zero(x);
     }
 
-    void writeToInt(uint32_t &a, uint32_t &b, uint32_t x, uint8_t &usedBits, uint8_t numberOfBits) {
-        constexpr uint8_t bitsInInt = 32;
-        if (usedBits + numberOfBits <= bitsInInt) {
-            // can safely write x to a;
-            a |= x << usedBits;
-            usedBits += numberOfBits;
-        } else {
-            // we can't write whole x, we need to split it between a and b
-            char bitsAvailable = bitsInInt - usedBits;
-            a |= x << usedBits;
-            b |= x >> bitsAvailable;
-            usedBits = numberOfBits - bitsAvailable;
+    void writeBits(std::vector<uint8_t> &out) {
+        uint8_t usedBits = 0;
+        uint8_t currentByte = 0;
+
+        for (const auto &x: *tempOut) {
+            int8_t bitsToWrite = x.second;
+            uint32_t code = x.first;
+#ifdef _DEBUG
+            std::cout << "\u001b[32m current_code: " << x.first << " current_byte: " << std::bitset<8>(currentByte) << "\u001b[0m" << std::endl;
+#endif
+            while(bitsToWrite > 0) {
+                uint8_t canWriteToByte = 8 - usedBits;
+#ifdef _DEBUG
+                std :: cout << "canWriteToByte: " << (int)canWriteToByte << std::endl;
+                std :: cout << "cb: " << std::bitset<8>(code << usedBits) << std::endl;
+#endif
+                currentByte |= code << usedBits;
+                usedBits = bitsToWrite > canWriteToByte ? 0 : bitsToWrite + usedBits;
+                code >>= canWriteToByte;
+#ifdef _DEBUG
+                std::cout << "usedBits: " << (int)usedBits << std::endl;
+#endif
+                if (usedBits == 0) {
+#ifdef _DEBUG
+                    std::cout << "out_byte: " << std::bitset<8> (currentByte) << ", char: " << std::hex << (int)currentByte << std::dec << std::endl;
+#endif
+                    out.push_back(currentByte);
+                    currentByte = 0;
+                }
+                bitsToWrite -= canWriteToByte;
+            }
+        }
+        if (usedBits != 0) {
+#ifdef _DEBUG
+            std::cout << "currentByte != 0: " << std::bitset<8> (currentByte) << ", char: " << std::hex << (int)currentByte << std::dec << std::endl;
+#endif
+            out.push_back(currentByte);
         }
     }
 
-    void writeBits(std::vector<uint8_t> &out) {
-        uint32_t number = 0;
-        uint32_t a = 0, b = 0;
-        uint8_t usedBits = 0;
-
-        for (const auto &x: *tempOut) {
-            writeToInt(a, b, x.first, usedBits, x.second);
-            if (usedBits == 32) {
-                // we have whole 4 bytes to write then reset everything
-                for (int i = 0; i < 4; i++) {
-                    uint8_t byte = a >> (8 * i);
-                    out.push_back(byte);
-                }
-
-                a = b = usedBits = 0;
-            } else if (b != 0) {
-                // we have 4 bytes ready to write then move b -> a
-                for (int i = 0; i < 4; i++) {
-                    uint8_t byte = a >> (8 * i);
-                    out.push_back(byte);
-                }
-                a = b;
-                b = 0;
-            }
+    int getDictSize(TrieNode *node = nullptr) {
+        if (node == nullptr) {
+            node = rootNode;
         }
-        if (a != 0) {
 
-            std::cout << "a != 0" << std::endl;
-
-            for (int i = 0; i < 4; i++) {
-                uint8_t byte = a >> (8 * i);
-                out.push_back(byte);
-            }
+        int sum = 1;
+        for(auto &x: node->children) {
+            sum += getDictSize(&x.second);
         }
+
+        return sum;
     }
 
     // writes to internal tempOut
@@ -112,14 +114,18 @@ class LzwCompressService {
         if (currentNode != rootNode) {
             tempOut->emplace_back(currentNode->code, getBitsToRepresentInteger(code));
         }
+
+        std::cout << "dict size: " << getDictSize() << std::endl;
     }
 
 public:
     void compress(const std::vector<uint8_t>& inputFile, std::vector<uint8_t>& outputFile) {
         compressInternal(inputFile);
-//        for (int i = 0; i < tempOut->size(); i++) {
-//            std::cout << "tempOut[" << i << "] = (" << (*tempOut)[i].first << ", " << (uint32_t)(*tempOut)[i].second << ")" << std::endl;
-//        }
+    #ifdef _DEBUG
+        for (int i = 0; i < tempOut->size(); i++) {
+            std::cout << "tempOut[" << i << "] = (" << (*tempOut)[i].first << ", " << (uint32_t)(*tempOut)[i].second << ")" << std::endl;
+        }
+#endif
         writeBits(outputFile);
     }
 
